@@ -28,6 +28,7 @@ model User {
   reviews       Review[]
   addresses     Address[]
   auditLogs     AuditLog[]     @relation("AuditActor")
+  extensionConnections ExtensionConnection[]
 }
 
 model Account {
@@ -100,7 +101,8 @@ model Product {
   stockQuantity   Int            @default(0)
   sku             String         @unique
   status          String         @default("draft") // draft|published|archived
-  source          String         @default("manual")
+  source          String         @default("manual") // manual|extension:<extensionId>
+  sourceUrl       String?        // origin URL when imported by an extension (e.g. Product Importer) — used for duplicate detection
   createdById     String?
   createdBy       User?          @relation("ProductCreatedBy", fields: [createdById], references: [id])
   createdAt       DateTime       @default(now())
@@ -109,6 +111,8 @@ model Product {
   reviews         Review[]
   wishlist        Wishlist[]
   orderItems      OrderItem[]
+  importActivity  ExtensionActivity[]
+  @@index([sourceUrl])
 }
 
 model ProductImage {
@@ -232,4 +236,80 @@ model AuditLog {
   ipAddress  String?
   createdAt  DateTime @default(now())
   @@index([entityType, entityId])
+}
+
+// ============================================================================
+// EXTENSION INTEGRATION LAYER
+// ----------------------------------------------------------------------------
+// Backs /api/extensions/v1/*. See EXTENSION_API.md and EXTENSION_DEVELOPER_GUIDE.md.
+// Static extension metadata (name, permissions, developer, apiVersion) lives in
+// code at src/lib/extensions/registry.ts and is upserted into `Extension` on
+// admin-page load; `enabled` and connection/token/activity state are DB-owned.
+// ============================================================================
+
+model Extension {
+  id                String                 @id // stable slug, e.g. "product-importer" — matches registry.ts
+  name              String
+  description       String                 @default("")
+  version           String
+  developer         String                 @default("")
+  apiVersion        String                 @default("v1")
+  permissions       String                 @default("[]") // JSON string[] of scopes this extension can request, e.g. ["products:write"]
+  allowedOrigins    String                 @default("[]") // JSON string[] of chrome-extension://<id> / https origins permitted for CORS
+  enabled           Boolean                @default(true) // admin kill switch — disables ALL connections instantly
+  createdAt         DateTime               @default(now())
+  updatedAt         DateTime               @updatedAt
+  connections       ExtensionConnection[]
+  activity          ExtensionActivity[]
+}
+
+model ExtensionConnection {
+  id             String              @id @default(cuid())
+  extensionId    String
+  extension      Extension           @relation(fields: [extensionId], references: [id], onDelete: Cascade)
+  userId         String
+  user           User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  permissions    String              @default("[]") // JSON string[] — granted scopes, always a subset of Extension.permissions
+  status         String              @default("active") // active|revoked
+  connectedAt    DateTime            @default(now())
+  revokedAt      DateTime?
+  lastActivityAt DateTime?
+  tokens         ExtensionToken[]
+  activity       ExtensionActivity[]
+  @@unique([extensionId, userId])
+  @@index([userId])
+}
+
+model ExtensionToken {
+  id           String              @id @default(cuid())
+  connectionId String
+  connection   ExtensionConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  tokenHash    String              @unique // sha256(raw token) — raw token is shown once at issuance/rotation and never stored
+  tokenPrefix  String              // first 10 chars of the raw token, for display ("ext_a1b2c3…") — not sufficient to authenticate
+  expiresAt    DateTime
+  revokedAt    DateTime?
+  rotatedFromId String?            // previous token id, if this token replaced one via rotation
+  lastUsedAt   DateTime?
+  createdAt    DateTime            @default(now())
+  @@index([connectionId])
+}
+
+model ExtensionActivity {
+  id           String               @id @default(cuid())
+  extensionId  String
+  extension    Extension            @relation(fields: [extensionId], references: [id], onDelete: Cascade)
+  connectionId String?
+  connection   ExtensionConnection? @relation(fields: [connectionId], references: [id], onDelete: SetNull)
+  userId       String?
+  action       String               // e.g. "product.import", "product.update", "auth.failed"
+  sourceUrl    String?
+  productId    String?
+  product      Product?             @relation(fields: [productId], references: [id], onDelete: SetNull)
+  status       String               // success|error
+  errorCode    String?              // e.g. DUPLICATE_PRODUCT, INVALID_PAYLOAD, PERMISSION_DENIED
+  metadata     String               @default("{}") // JSON — small structured context only, never raw secrets/tokens
+  createdAt    DateTime             @default(now())
+  @@index([extensionId, createdAt])
+  @@index([connectionId])
+  @@index([productId])
 }
