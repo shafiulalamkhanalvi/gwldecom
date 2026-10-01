@@ -1,21 +1,8 @@
 import Link from "next/link"
-import type { Metadata } from "next"
 import { db } from "@/lib/db"
 import { ProductCard } from "@/components/store/product-card"
 import { SearchX } from "lucide-react"
 import { Button } from "@/components/ui/button"
-
-// Every distinct ?q= is effectively its own URL with thin, overlapping
-// content (a subset of the catalog also reachable via /category). Indexing
-// each query would flood search results with near-duplicate pages, so this
-// route is kept out of the index while still letting bots follow links from
-// it (e.g. into product pages). robots.ts also disallows /search outright
-// for crawl budget; this covers the metadata case if that rule is ever relaxed.
-export const metadata: Metadata = {
-  title: "Search products",
-  robots: { index: false, follow: true },
-  alternates: { canonical: "/search" },
-}
 
 export default async function SearchPage({ searchParams }: { searchParams: Promise<{ q?: string }> }) {
   const { q } = await searchParams
